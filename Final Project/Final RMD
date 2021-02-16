@@ -1,0 +1,184 @@
+---
+title: "Most Final RMD"
+author: "Catherine Jennifer"
+date: "12/13/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Libraries used 
+```{r}
+library(readr)
+library(randomForest)
+library(dplyr)      # data wrangling
+library(caret)
+library(reshape2)   # for heat map
+```
+
+## Import dataset
+```{r}
+training <- read_csv("training.csv") # 260 vars
+test <- read_csv("test.csv")
+sample <- read_csv("sample.csv")
+```
+
+## Converting PublishedDate column to 'PublishedHour'
+```{r}
+A <- function(x) {
+    y <- sub(":.*", "", x)
+    return(as.numeric(y))
+}
+
+colnames(training)[2] <- "PublishedHour"
+training$PublishedHour <- strptime(training$PublishedHour, format='%m/%d/%Y %H:%M')
+training$PublishedHour <- strftime(training$PublishedHour, '%H:%M')
+training[2] <- lapply(training[2], A)
+```
+
+
+## Remove id and changing names of few predictors 
+```{r}
+clean <- training[,-c(1)] 
+
+colnames(clean)[209:240] <- c("exclamation", "backslash", "hashtag", "dollar", "percentage", 
+    "and", "singleapostrophe", "leftbrack", "rightbrack", "asterisk", "plus", "comma", "dash",
+    "dot", "forwardslash", "colon", "semicolon", "lessthan", "equal", "greaterthan", "question", 
+    "attherate", "leftsquarebrack", "doublebackslash", "rightsquarebracket", "tothepower", 
+    "underscore", "smallapostrophe", "leftcurlybrack","line", "rightcurlybrack", "tilda")
+    
+colnames(test)[210:241] <- c("exclamation", "backslash", "hashtag", "dollar", "percentage", "and",
+    "singleapostrophe", "leftbrack", "rightbrack", "asterisk", "plus", "comma", "dash", "dot",
+    "forwardslash", "colon", "semicolon", "lessthan", "equal", "greaterthan", "question", 
+    "attherate", "leftsquarebrack", "doublebackslash", "rightsquarebracket", "tothepower", 
+    "underscore", "smallapostrophe", "leftcurlybrack","line", "rightcurlybrack", "tilda")
+```
+
+## Remove near-zero variance predictors
+```{r}
+draft <- clean
+
+nzv <- nearZeroVar(draft, saveMetrics= TRUE)
+nzv[nzv$nzv,][,]
+
+nzv <- nearZeroVar(draft)
+filtered_training <- draft[, -nzv]
+dim(filtered_training) 
+
+draft_var <- filtered_training
+dim(draft_var) 
+```
+
+## Removing highly correlated variables
+```{r}
+correlationMatrix <- (cor(draft_var[ ,-221], use = "complete.obs")) 
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff = 0.75)
+draft_cor <- draft_var[,-highlyCorrelated]
+dim(draft_cor) 
+```
+
+## Random forest
+```{r}
+recommended.mtry <- floor((ncol(draft_cor))/3) 
+tunegrid <- expand.grid(mtry=recommended.mtry)
+set.seed(13)
+
+forestfit <- randomForest(growth_2_6 ~ ., 
+                       data = draft_cor, mtry= recommended.mtry,tunegrid = tunegrid,
+                       importance = TRUE) 
+
+# variable importance plot
+varImpPlot(forestfit, type = 1, scale = F)
+
+importance(forestfit)
+
+# extract top variables from forest fit
+a <- as.data.frame(importance(forestfit))
+a <- tibble::rownames_to_column(a, "Variables")
+b <- arrange(a, -IncNodePurity)
+c <- b[1:27,1]
+c <- append(c, "growth_2_6")
+
+# creating dataframe with top  predictors using random forest
+draft_cor1  <- draft_cor[ ,c("growth_2_6", "Num_Subscribers_Base_low_mid", "Duration",
+    "Num_Views_Base_mid_high", "views_2_hours", "PublishedHour", "doc2vec_4", "edge_avg_value",
+    "cnn_25", "avg_growth_low", "cnn_10", "cnn_86", "cnn_68", "hog_454", "num_chars", "line",
+    "avg_growth_low_mid", "avg_growth_mid_high", "count_vids_low_mid", "num_digit_chars",
+    "Num_Views_Base_low", "Num_Subscribers_Base_mid_high", "count_vids_mid_high",
+    "Num_Subscribers_Base_low", "sd_red", "sd_blue", "num_uppercase_chars" )] # 27 columns
+```
+
+## Feature selection - correlation method - Heat map for visualization
+```{r}
+#get the correlation matrix
+cor_mtx = round(cor(draft_cor1), 2)
+
+# reshape it
+melted_cor_mtx <- melt(cor_mtx)
+
+# draw the heatmap
+cor_heatmap = ggplot(data = melted_cor_mtx, aes(fill=value, x = Var1 , y = Var2)) + geom_tile()
+cor_heatmap = cor_heatmap + scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+    midpoint = 0, limit = c(-1,1), space = "Lab", name="Pearson\nCorrelation") + 
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 6, hjust = 1))
+
+cor_heatmap
+```
+
+## Random forest Model with Final Predictors
+```{r}
+recommended.mtry2 <- floor((ncol(draft_cor1))/3) #15
+tunegrid2 <- expand.grid(mtry=recommended.mtry2)
+set.seed(123)
+
+forestfit2 <- randomForest(growth_2_6 ~ ., data = draft_cor1, mtry = recommended.mtry2, 
+    tunegrid = tunegrid2,importance = TRUE)
+
+# variable importance plot
+varImpPlot(forestfit2, type = 1, scale = F)
+print(forestfit2)
+```
+
+## Random Forest Cross-Validation Using Caret
+
+```{r}
+### RANDOM FOREST IMPLEMENTATION USING CARET
+
+#5 folds, repeat 3 times
+control <- trainControl(method = "cv", number = 5, repeats = 3)
+set.seed(123)
+recommended.mtry3 <- floor((ncol(draft_cor1))/3) 
+tunegrid3 <- expand.grid(mtry=recommended.mtry3)
+# Random Forest:
+model_rf2 <- train(growth_2_6 ~., data=draft_cor1, method = "rf", metric = 'RMSE', tuneGrid=tunegrid3, trControl = control )
+```
+
+
+## Converting Published Date column to 'PublishedHour' column in test data
+```{r}
+colnames(test)[2] <- "PublishedHour"
+
+test$PublishedHour <- strptime(test$PublishedHour, format='%m/%d/%Y %H:%M')
+test$PublishedHour <- strftime(test$PublishedHour, '%H:%M')
+test[2] <- lapply(test[2], A)
+
+predTREE <- predict(forestfit2, newdata = test)
+sum(predTREE < 0) # checking if any negative values are predicted
+```
+
+## Preparing csv for submission on Kaggle
+```{r}
+#Setting seed to reproduce model
+set.seed(13)
+
+pred <- predTREE
+names(pred) <- NULL
+submission <- data.frame("id" = test$id, "growth_2_6" = pred)
+
+# Export submission
+write.csv(submission, "trial1708.csv", row.names = FALSE)
+```
